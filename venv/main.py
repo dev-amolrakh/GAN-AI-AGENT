@@ -49,10 +49,28 @@ class SocialMediaManager:
                     user_info = result["user_info"]
                     print(f"   Username: @{user_info['username']}")
                     print(f"   Name: {user_info['name']}")
-                    print(f"   Followers: {user_info['followers']}")
+                    if "followers" in user_info:
+                        print(f"   Followers: {user_info['followers']}")
+                if "connection_type" in result:
+                    print(f"   Connection Type: {result['connection_type']}")
+                if "note" in result:
+                    print(f"   📝 Note: {result['note']}")
+                    
+            elif result["status"] == "warning":
+                print("⚠️  Rate limit reached (but connection likely working)")
+                print(f"   {result['message']}")
+                if "note" in result:
+                    print(f"   📝 {result['note']}")
+                if "suggestion" in result:
+                    print(f"   💡 Suggestion: {result['suggestion']}")
+                if "tip" in result:
+                    print(f"   💡 Tip: {result['tip']}")
+                    
             else:
                 print("❌ Connection failed!")
                 print(f"   Error: {result['message']}")
+                if "suggestion" in result:
+                    print(f"   💡 Suggestion: {result['suggestion']}")
                 
         except Exception as e:
             print(f"❌ Connection failed: {e}")

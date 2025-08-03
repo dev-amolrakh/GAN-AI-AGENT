@@ -134,16 +134,41 @@ class SocialMediaAIAgent:
     def setup_twitter_api(self):
         """Set up Twitter API connection"""
         try:
-            # Twitter API v2
-            client = tweepy.Client(
-                bearer_token=os.getenv("TWITTER_BEARER_TOKEN"),
-                consumer_key=os.getenv("TWITTER_API_KEY"),
-                consumer_secret=os.getenv("TWITTER_API_SECRET"),
-                access_token=os.getenv("TWITTER_ACCESS_TOKEN"),
-                access_token_secret=os.getenv("TWITTER_ACCESS_SECRET")
-            )
-            logging.info("Twitter API client setup successful")
-            return client
+            # Check if credentials are available
+            bearer_token = os.getenv("TWITTER_BEARER_TOKEN")
+            consumer_key = os.getenv("TWITTER_API_KEY")
+            consumer_secret = os.getenv("TWITTER_API_SECRET")
+            access_token = os.getenv("TWITTER_ACCESS_TOKEN")
+            access_token_secret = os.getenv("TWITTER_ACCESS_SECRET")
+            
+            if not bearer_token:
+                logging.error("Twitter Bearer Token not found in environment variables")
+                return None
+            
+            # Try to create client with full OAuth first
+            if all([consumer_key, consumer_secret, access_token, access_token_secret]):
+                try:
+                    client = tweepy.Client(
+                        bearer_token=bearer_token,
+                        consumer_key=consumer_key,
+                        consumer_secret=consumer_secret,
+                        access_token=access_token,
+                        access_token_secret=access_token_secret
+                    )
+                    logging.info("Twitter API client setup successful with full OAuth")
+                    return client
+                except Exception as e:
+                    logging.warning(f"Failed to setup with full OAuth credentials: {e}")
+            
+            # Fallback to Bearer Token only
+            try:
+                client = tweepy.Client(bearer_token=bearer_token)
+                logging.info("Twitter API client setup successful with Bearer Token only")
+                return client
+            except Exception as e:
+                logging.error(f"Failed to setup with Bearer Token: {e}")
+                return None
+                
         except Exception as e:
             logging.error(f"Error setting up Twitter API: {e}")
             return None
@@ -1050,23 +1075,107 @@ Platform: {platform}"""
             if not self.twitter_api:
                 return {"status": "error", "message": "Twitter API not initialized"}
             
-            # Try to get user info
-            user = self.twitter_api.get_me()
-            if user:
-                return {
-                    "status": "success", 
-                    "message": f"Connected successfully as @{user.data.username}",
-                    "user_info": {
-                        "username": user.data.username,
-                        "name": user.data.name,
-                        "followers": getattr(user.data, 'public_metrics', {}).get('followers_count', 'N/A')
-                    }
-                }
-            else:
-                return {"status": "error", "message": "Failed to get user information"}
+            # First check if credentials are loaded
+            bearer_token = os.getenv("TWITTER_BEARER_TOKEN")
+            api_key = os.getenv("TWITTER_API_KEY")
+            
+            if not bearer_token:
+                return {"status": "error", "message": "Twitter Bearer Token not found in environment variables"}
+            
+            # For rate limit issues, try a lighter API call first
+            try:
+                # Try to get user info directly (requires less rate limit)
+                if api_key and os.getenv("TWITTER_API_SECRET") and os.getenv("TWITTER_ACCESS_TOKEN") and os.getenv("TWITTER_ACCESS_SECRET"):
+                    try:
+                        user = self.twitter_api.get_me()
+                        if user and user.data:
+                            return {
+                                "status": "success", 
+                                "message": f"Connected successfully as @{user.data.username}",
+                                "user_info": {
+                                    "username": user.data.username,
+                                    "name": user.data.name,
+                                    "id": user.data.id
+                                },
+                                "connection_type": "Full OAuth"
+                            }
+                    except tweepy.TooManyRequests:
+                        # If rate limited on get_me, try a simpler verification
+                        return {
+                            "status": "warning", 
+                            "message": "Twitter API rate limit hit, but credentials appear valid",
+                            "note": "Connection likely working - rate limit will reset soon",
+                            "suggestion": "Wait 15 minutes before testing again"
+                        }
+                    except Exception as oauth_error:
+                        logging.warning(f"OAuth method failed: {oauth_error}")
                 
+                # Fallback: Try a very light search query
+                try:
+                    response = self.twitter_api.search_recent_tweets(
+                        query="the", 
+                        max_results=10
+                    )
+                    
+                    if response:
+                        return {
+                            "status": "success", 
+                            "message": "Twitter API connection successful (Bearer Token)",
+                            "note": "Basic connection verified via search API",
+                            "connection_type": "Bearer Token Only"
+                        }
+                except tweepy.TooManyRequests:
+                    return {
+                        "status": "warning", 
+                        "message": "Twitter API rate limit exceeded",
+                        "note": "This is normal - your credentials are likely valid",
+                        "suggestion": "Rate limits reset every 15 minutes. Try again later.",
+                        "tip": "In production mode, the agent handles rate limits automatically"
+                    }
+                    
+            except tweepy.Unauthorized as e:
+                return {"status": "error", "message": f"Twitter API authentication failed: {str(e)}. Please check your Bearer Token."}
+            except tweepy.Forbidden as e:
+                return {"status": "error", "message": f"Twitter API access forbidden: {str(e)}. Your app may not have the required permissions."}
+                
+        except tweepy.Unauthorized as e:
+            return {"status": "error", "message": f"Twitter API authentication failed: {str(e)}. Please check your API credentials."}
+        except tweepy.Forbidden as e:
+            return {"status": "error", "message": f"Twitter API access forbidden: {str(e)}. Your app may not have the required permissions."}
+        except tweepy.NotFound as e:
+            return {"status": "error", "message": f"Twitter API endpoint not found: {str(e)}"}
+        except tweepy.TooManyRequests as e:
+            return {
+                "status": "warning", 
+                "message": "Twitter API rate limit exceeded",
+                "note": "This usually means your credentials are working",
+                "suggestion": "Wait 15 minutes for rate limit reset",
+                "details": str(e)
+            }
         except Exception as e:
-            return {"status": "error", "message": f"Connection failed: {str(e)}"}
+            return {"status": "error", "message": f"Connection failed: {str(e)}. Error type: {type(e).__name__}"}
+    
+    def get_rate_limit_status(self) -> Dict:
+        """Check Twitter API rate limit status"""
+        try:
+            if not self.twitter_api:
+                return {"status": "error", "message": "Twitter API not initialized"}
+            
+            # This is a lightweight call to check rate limits
+            rate_limit = self.twitter_api.get_rate_limit_status()
+            return {
+                "status": "success",
+                "message": "Rate limit status retrieved",
+                "rate_limits": rate_limit
+            }
+        except tweepy.TooManyRequests:
+            return {
+                "status": "rate_limited",
+                "message": "Currently rate limited",
+                "suggestion": "Wait 15 minutes for reset"
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to get rate limit status: {str(e)}"}
     
     def test_post_creation(self, test_topic: str = None) -> Dict:
         """Test content generation without posting"""
